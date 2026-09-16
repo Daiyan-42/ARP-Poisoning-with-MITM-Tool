@@ -1,0 +1,86 @@
+import fcntl
+import json
+import os
+from pathlib import Path
+import socket
+import struct
+import threading
+import time
+
+from .packets import build_arp, parse_arp
+
+
+def interface_info(iface):
+    if not iface or "/" in iface or len(iface.encode()) > 15:
+        raise ValueError("Invalid interface name")
+    mac = Path(f"/sys/class/net/{iface}/address").read_text().strip()
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+        data = fcntl.ioctl(sock.fileno(), 0x8915, struct.pack("256s", iface.encode()))
+    return socket.inet_ntoa(data[20:24]), mac
+
+
+def raw_socket(iface):
+    sock = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(0x0003))
+    sock.bind((iface, 0))
+    sock.settimeout(0.1)
+    return sock
+
+
+def resolve(sock, own_ip, own_mac, target, timeout=3):
+    deadline, next_send = time.monotonic() + timeout, 0
+    while time.monotonic() < deadline:
+        if time.monotonic() >= next_send:
+            sock.send(build_arp(own_mac, own_ip, "00:00:00:00:00:00", target, 1, True))
+            next_send = time.monotonic() + 0.5
+        try:
+            frame, addr = sock.recvfrom(65535)
+        except socket.timeout:
+            continue
+        arp = parse_arp(frame)
+        if addr[2] != socket.PACKET_OUTGOING and arp and arp["op"] == 2 and \
+                arp["src_ip"] == target and arp["dst_ip"] == own_ip and arp["dst_mac"] == own_mac:
+            return arp["src_mac"]
+    raise TimeoutError(f"No ARP reply from {target} within {timeout}s")
+
+
+class EventLog:
+    def __init__(self, path, console=True):
+        self.path = Path(path)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.file = self.path.open("a", buffering=1)
+        self.lock = threading.Lock()
+        self.console = console
+
+    def emit(self, event, **fields):
+        record = dict(time=time.time(), event=event, **fields)
+        line = json.dumps(record, sort_keys=True)
+        with self.lock:
+            self.file.write(line + "\n")
+            if self.console:
+                print(line, flush=True)
+        return record
+
+    def close(self):
+        self.file.close()
+
+
+def atomic_json(path, value):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + f".{os.getpid()}.tmp")
+    temporary.write_text(json.dumps(value, indent=2) + "\n")
+    temporary.replace(path)
+
+
+class PcapWriter:
+    def __init__(self, path):
+        self.file = open(path, "wb")
+        self.file.write(struct.pack("<IHHIIII", 0xa1b2c3d4, 2, 4, 0, 0, 65535, 1))
+
+    def write(self, frame):
+        now = time.time()
+        self.file.write(struct.pack("<IIII", int(now), int(now % 1 * 1e6), len(frame), len(frame)))
+        self.file.write(frame)
+
+    def close(self):
+        self.file.close()

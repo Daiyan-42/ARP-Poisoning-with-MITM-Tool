@@ -1,0 +1,54 @@
+name: arp-cache-lab
+x-node: &node
+  image: arp-cache-lab:local
+  pull_policy: never
+  init: true
+  cap_drop: [ALL]
+  cap_add: [NET_RAW, NET_ADMIN, NET_BIND_SERVICE]
+  security_opt: [no-new-privileges:true]
+  sysctls:
+    net.ipv4.ip_forward: "0"
+    net.ipv4.conf.all.send_redirects: "0"
+    net.ipv4.conf.default.send_redirects: "0"
+  volumes:
+    - ./artifacts:/artifacts
+  healthcheck:
+    test: [CMD, python, -m, arplab.client, health]
+    interval: 2s
+    timeout: 2s
+    retries: 15
+  stop_grace_period: 10s
+services:
+  gateway:
+    <<: *node
+    build: .
+    command: [python, -m, arplab.node, gateway]
+    networks:
+      lab:
+        ipv4_address: 10.0.0.1
+        mac_address: "02:42:0a:00:00:01"
+  victim:
+    <<: *node
+    command: [python, -m, arplab.node, victim]
+    networks:
+      lab:
+        ipv4_address: 10.0.0.10
+        mac_address: "02:42:0a:00:00:0a"
+  attacker:
+    <<: *node
+    command: [python, -m, arplab.node, attacker]
+    depends_on:
+      gateway: {condition: service_healthy}
+      victim: {condition: service_healthy}
+    networks:
+      lab:
+        ipv4_address: 10.0.0.66
+        mac_address: "02:42:0a:00:00:42"
+networks:
+  lab:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: 10.0.0.0/24
+          gateway: 10.0.0.254
