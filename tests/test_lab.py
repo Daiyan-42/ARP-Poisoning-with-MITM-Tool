@@ -8,7 +8,7 @@ from arplab.client import get, main as client_main
 from arplab.config import ATTACKER, GATEWAY, TRUSTED, VICTIM
 from arplab.defense import Detector
 from arplab.node import HTTPHandler, dns_response
-from arplab.packets import (build_arp_reply, checksum, ethernet, parse_arp,
+from arplab.packets import (build_arp_reply, checksum, complete_transport_checksum, ethernet, parse_arp,
                             parse_ipv4, replace_tcp_payload)
 
 
@@ -67,6 +67,31 @@ class LabTests(unittest.TestCase):
         self.assertIsNone(dns_response(response))
         missing = dns_response(query.replace(b"demo", b"nope"))
         self.assertEqual(missing[3] & 15, 3)
+
+    def test_relay_finishes_offloaded_tcp_and_udp_checksums(self):
+        ips = bytes([10, 0, 0, 10, 10, 0, 0, 1])
+        for protocol, options, segment in (
+            (6, b"", struct.pack("!HHIIBBHHH", 40000, 8080, 1, 0,
+                                  0x50, 2, 4096, 0x1420, 0)),
+            (17, b"\x01\x01\x01\x00", struct.pack("!HHHH", 40000, 53, 11, 0x1420) + b"dns"),
+        ):
+            with self.subTest(protocol=protocol):
+                ihl = 20 + len(options)
+                ip = struct.pack("!BBHHHBBH", 0x40 + ihl // 4, 0,
+                                 ihl + len(segment), 1, 0, 64, protocol, 0) + ips + options
+                frame = ethernet(TRUSTED[ATTACKER], TRUSTED[VICTIM], 0x0800,
+                                 ip + segment) + b"padding"
+                pseudo = ips + struct.pack("!BBH", 0, protocol, len(segment))
+                self.assertNotEqual(checksum(pseudo + segment), 0)
+                updated = complete_transport_checksum(frame)
+                self.assertEqual(checksum(pseudo + updated[14 + ihl:-7]), 0)
+                self.assertEqual(updated[:14 + ihl], frame[:14 + ihl])
+                self.assertEqual(updated[-7:], b"padding")
+                self.assertEqual(parse_ipv4(updated)["payload"], parse_ipv4(frame)["payload"])
+                self.assertEqual(complete_transport_checksum(updated), updated)
+                fragmented = bytearray(frame)
+                fragmented[20:22] = b"\x20\x00"
+                self.assertEqual(complete_transport_checksum(bytes(fragmented)), bytes(fragmented))
 
 
 if __name__ == "__main__":

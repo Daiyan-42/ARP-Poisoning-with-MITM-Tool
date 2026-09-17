@@ -10,7 +10,7 @@ import time
 
 from .config import ATTACKER, GATEWAY, IFACE, TRUSTED, VICTIM
 from .io import EventLog, PcapWriter, atomic_json, interface_info, raw_socket, resolve
-from .packets import (build_arp_reply, dns_name, mac_bytes, parse_ipv4,
+from .packets import (build_arp_reply, complete_transport_checksum, dns_name, mac_bytes, parse_ipv4,
                       replace_tcp_payload, rewrite_ethernet)
 
 
@@ -103,6 +103,7 @@ def run(args):
                 if changed:
                     stats["modified"] += 1
                     log.emit("modified", original="ORIGINAL", replacement="MODIFIED")
+            frame = complete_transport_checksum(frame)
             frame = rewrite_ethernet(frame, peers[dest], own_mac)
             if args.delay_ms:
                 if len(pending) >= 10000:

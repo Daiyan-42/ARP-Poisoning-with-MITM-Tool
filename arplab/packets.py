@@ -92,6 +92,35 @@ def rewrite_ethernet(frame, dst, src):
     return mac_bytes(dst) + mac_bytes(src) + frame[12:]
 
 
+def complete_transport_checksum(frame):
+    """Finish TCP/UDP checksums before raw retransmission in the Docker lab.
+
+    recvfrom returns bytes without the kernel's checksum-offload metadata.
+    Even unchanged packets can therefore need a checksum before sock.send.
+    Fragmented datagrams need reassembly and are left unchanged.
+    """
+    info = parse_ipv4(frame)
+    if not info or info["fragmented"] or "src_port" not in info:
+        return frame
+    start = 14 + info["ihl"]
+    length = info["size"] - info["ihl"]
+    if info["protocol"] == 6:
+        offset = start + 16
+    elif info["protocol"] == 17:
+        length = int.from_bytes(frame[start + 4:start + 6], "big")
+        offset = start + 6
+    else:
+        return frame
+    data = bytearray(frame)
+    data[offset:offset + 2] = b"\x00\x00"
+    pseudo = data[26:34] + struct.pack("!BBH", 0, info["protocol"], length)
+    value = checksum(bytes(pseudo + data[start:start + length]))
+    if info["protocol"] == 17 and value == 0:
+        value = 0xffff  # UDP zero means checksum disabled.
+    data[offset:offset + 2] = struct.pack("!H", value)
+    return bytes(data)
+
+
 def replace_tcp_payload(frame, old=b"ORIGINAL", new=b"MODIFIED"):
     if not old or len(old) != len(new):
         raise ValueError("Replacement must be nonempty and have equal byte length")

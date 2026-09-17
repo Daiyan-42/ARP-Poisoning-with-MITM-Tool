@@ -57,6 +57,13 @@ frames. Use distinct output directories to keep each experiment's results.
 The modification replaces an equal-length token within individual TCP packets;
 it does not reassemble TCP streams.
 
+The relay completes TCP and UDP checksums on every unfragmented packet before
+forwarding. Docker's virtual interfaces can deliver packets with unfinished
+offloaded checksums; raw retransmission loses the metadata needed to finish them.
+Without this step, HTTP connection attempts and DNS queries can both time out.
+After changing the Python code, rebuild the containers with
+`docker compose up --build -d --wait` because the code is copied into the image.
+
 ## Demonstrate defense
 
 Enable permanent mappings on both endpoints, then repeat the attack and requests:
