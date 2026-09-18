@@ -8,8 +8,9 @@ import socket
 import sys
 import time
 
-from .config import ATTACKER, GATEWAY, IFACE, TRUSTED, VICTIM
-from .io import EventLog, PcapWriter, atomic_json, interface_info, raw_socket, resolve
+from .config import ARTIFACTS_DIR, ATTACKER, GATEWAY, IFACE, TRUSTED, VICTIM
+from .io import (EventLog, OUTGOING, PcapWriter, atomic_json, interface_info, ip_forwarding_enabled,
+                 raw_socket, resolve)
 from .packets import (build_arp_reply, complete_transport_checksum, dns_name, mac_bytes, parse_ipv4,
                       replace_tcp_payload, rewrite_ethernet)
 
@@ -20,12 +21,13 @@ def run(args):
     try:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
-        raise RuntimeError("An attack is already running in this container")
+        raise RuntimeError("An attack is already running on this machine")
     own_ip, own_mac = interface_info(args.interface)
     if (own_ip, own_mac) != (ATTACKER, TRUSTED[ATTACKER]) or \
             args.victim != VICTIM or args.gateway != GATEWAY:
-        raise ValueError("This tool is restricted to the configured three-container lab")
-    if Path("/proc/sys/net/ipv4/ip_forward").read_text().strip() != "0":
+        raise ValueError("This tool is restricted to the configured lab topology "
+                         "(check the ARPLAB_* environment variables)")
+    if ip_forwarding_enabled():
         raise RuntimeError("Kernel IP forwarding must be disabled for the user-space relay")
     output = Path(args.output)
     output.mkdir(parents=True, exist_ok=True)
@@ -73,7 +75,7 @@ def run(args):
             except socket.timeout:
                 continue
             # Ignore locally transmitted frames and traffic unrelated to the two victims.
-            if addr[2] == socket.PACKET_OUTGOING or frame[:6] != mac_bytes(own_mac):
+            if addr[2] == OUTGOING or frame[:6] != mac_bytes(own_mac):
                 continue
             info = parse_ipv4(frame)
             if not info:
@@ -153,7 +155,7 @@ def main():
     parser.add_argument("--duration", type=float, default=60, help="Seconds; SIGINT/SIGTERM also restore caches")
     parser.add_argument("--interval", type=float, default=1)
     parser.add_argument("--delay-ms", type=float, default=0)
-    parser.add_argument("--output", default="/artifacts/manual")
+    parser.add_argument("--output", default=f"{ARTIFACTS_DIR}/manual")
     args = parser.parse_args()
     import math
     if not all(math.isfinite(v) for v in (args.duration, args.interval, args.delay_ms)) or \

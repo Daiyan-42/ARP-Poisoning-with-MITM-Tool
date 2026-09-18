@@ -95,3 +95,25 @@ Health checks use a container-local HTTP endpoint on port 8000. For startup
 problems, inspect `docker compose ps` and `docker compose logs`. Unit tests cover
 ARP poisoning detection/restoration, TCP payload checksums, and DNS responses;
 the commands above exercise the live network behavior.
+
+## Running natively on real machines (macOS / Linux)
+
+The `arplab` package also runs outside Docker, directly on Linux or macOS, using
+`arplab/io_linux.py` (AF_PACKET) or `arplab/io_macos.py` (BPF) depending on
+`platform.system()` -- `arplab/io.py` picks the right one automatically, so
+`attack.py`/`defense.py`/`node.py`/`client.py` are identical on both platforms.
+
+All lab addresses are environment-variable overrides on top of the Docker
+defaults (`arplab/config.py`): `ARPLAB_IFACE`, `ARPLAB_VICTIM_IP`,
+`ARPLAB_VICTIM_MAC`, `ARPLAB_GATEWAY_IP`, `ARPLAB_GATEWAY_MAC`,
+`ARPLAB_ATTACKER_IP`, `ARPLAB_ATTACKER_MAC`, `ARPLAB_ARTIFACTS_DIR`. Export the
+same values on every participating machine before running any `arplab` command,
+then run `arplab.node`/`arplab.client`/`arplab.attack`/`arplab.defense` with
+`sudo` exactly as in the Docker walkthrough above (raw sockets need root on
+both platforms). Both machines must be on the same Wi-Fi/LAN broadcast segment,
+and the router's client/AP isolation (if any) must be disabled.
+
+macOS's BPF backend needs no extra dependencies beyond the standard library and
+system `ifconfig`/`arp`/`sysctl`, but its raw-socket path has not been
+exercised against live traffic (only interface lookup has); if `raw_socket()`
+misbehaves under `sudo`, that is the first place to look.

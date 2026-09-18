@@ -1,13 +1,13 @@
 """Trusted ARP mapping monitoring and permanent neighbor defense."""
 import argparse
 from collections import deque
+import platform
 import socket
-import subprocess
 import threading
 import time
 
-from .config import IFACE, ROLES, TRUSTED
-from .io import EventLog, raw_socket
+from .config import ARTIFACTS_DIR, IFACE, ROLES, TRUSTED
+from .io import EventLog, OUTGOING, raw_socket, set_neighbor
 from .packets import parse_arp
 
 
@@ -42,7 +42,7 @@ class Watcher:
     def __init__(self, role, iface=IFACE):
         self.iface = iface
         self.detector = Detector()
-        self.log = EventLog(f"/artifacts/{role}-watch.jsonl", console=False)
+        self.log = EventLog(f"{ARTIFACTS_DIR}/{role}-watch.jsonl", console=False)
         self.alerts = deque(maxlen=200)
         self.count = 0
         self.lock = threading.Lock()
@@ -61,7 +61,7 @@ class Watcher:
                 frame, addr = self.socket.recvfrom(65535)
             except socket.timeout:
                 continue
-            if addr[2] == socket.PACKET_OUTGOING:
+            if addr[2] == OUTGOING:
                 continue
             arp = parse_arp(frame)
             if arp:
@@ -89,24 +89,18 @@ def set_static(role, enabled, iface=IFACE):
     if role not in ("victim", "gateway"):
         raise ValueError("Static protection runs on victim or gateway")
     peer = ROLES["gateway" if role == "victim" else "victim"]
-    if enabled:
-        subprocess.run(["ip", "neigh", "replace", peer, "lladdr", TRUSTED[peer],
-                        "nud", "permanent", "dev", iface], check=True)
-    else:
-        # Replace rather than flush unrelated entries. A known dynamic entry
-        # gives Linux an existing cache entry for the unsolicited-reply experiment.
-        subprocess.run(["ip", "neigh", "replace", peer, "lladdr", TRUSTED[peer],
-                        "nud", "reachable", "dev", iface], check=True)
-    # These sysctls control ARP requests/announcements, NOT reply authentication.
-    # The permanent neighbor entry is what prevents this poisoning attack.
-    for setting, value in (("arp_ignore", 1 if enabled else 0), ("arp_announce", 2 if enabled else 0)):
-        # /proc/sys is read-only on some container runtimes; pinning still works.
-        # Use netlink pinning as the defense and report any sysctl limitation.
-        try:
-            with open(f"/proc/sys/net/ipv4/conf/{iface}/{setting}", "w") as file:
-                file.write(str(value))
-        except OSError:
-            pass
+    # The pinned neighbor entry is what actually prevents this poisoning attack.
+    set_neighbor(iface, peer, TRUSTED[peer], enabled)
+    if platform.system() == "Linux":
+        # These sysctls control ARP requests/announcements, NOT reply authentication;
+        # they have no macOS equivalent and aren't needed for the defense to work.
+        for setting, value in (("arp_ignore", 1 if enabled else 0), ("arp_announce", 2 if enabled else 0)):
+            # /proc/sys is read-only on some container runtimes; pinning still works.
+            try:
+                with open(f"/proc/sys/net/ipv4/conf/{iface}/{setting}", "w") as file:
+                    file.write(str(value))
+            except OSError:
+                pass
     return {"enabled": enabled, "peer": peer, "mac": TRUSTED[peer]}
 
 

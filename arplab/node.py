@@ -7,7 +7,7 @@ import socketserver
 import struct
 import threading
 
-from .config import GATEWAY, ROLES, TRUSTED
+from .config import GATEWAY, IFACE, ROLES, TRUSTED
 from .defense import Watcher, set_static
 from .io import interface_info
 from .packets import dns_name
@@ -89,9 +89,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("role", choices=ROLES)
     args = parser.parse_args()
-    own_ip, own_mac = interface_info("eth0")
+    own_ip, own_mac = interface_info(IFACE)
     if (own_ip, own_mac) != (ROLES[args.role], TRUSTED[ROLES[args.role]]):
-        raise RuntimeError("Node must run in its configured lab container")
+        raise RuntimeError("Node must run on the machine matching its configured role "
+                          "(check the ARPLAB_* environment variables)")
     stopped = threading.Event()
     for sig in (signal.SIGINT, signal.SIGTERM):
         signal.signal(sig, lambda *_: stopped.set())
