@@ -28,13 +28,23 @@ def traffic(expected, dropped=False):
 
 
 def protection(enabled):
+    # Bindings come from the host's Docker control plane (arplab.inventory),
+    # not a hardcoded table -- see README "Demonstrate defense".
+    subprocess.run(["python3", "-m", "arplab.inventory", "enable" if enabled else "disable"],
+                   cwd=ROOT, check=True)
+
+
+def dropped_arp_total():
+    total = 0
     for role in ("victim", "gateway"):
-        docker(role, "python", "-m", "arplab.defense", role,
-               "enable" if enabled else "disable")
+        status = json.loads(docker(role, "python", "-m", "arplab.defense", role, "status").stdout)
+        total += status.get("dropped_arp") or 0
+    return total
 
 
 def scenario(name, mode, protected=False, delay=0):
     protection(protected)
+    before_dropped = dropped_arp_total() if protected else None
     folder = ROOT / "artifacts" / ("test-" + name + "-" + str(time.time_ns()))
     folder.mkdir(parents=True)
     command = ["docker", "compose", "exec", "-T", "attacker", "python", "-m",
@@ -55,8 +65,10 @@ def scenario(name, mode, protected=False, delay=0):
                 while not protected and "02:42:0a:00:00:42" not in neighbor and time.monotonic() < deadline:
                     time.sleep(0.2)
                     neighbor = docker(role, "ip", "neigh", "show", peer).stdout
+                # Defended peers reject the forged ARP before it ever reaches the
+                # neighbor table -- entries stay dynamic, never the attacker's MAC.
                 if protected:
-                    assert "PERMANENT" in neighbor and "02:42:0a:00:00:42" not in neighbor, neighbor
+                    assert "02:42:0a:00:00:42" not in neighbor, neighbor
                 else:
                     assert "02:42:0a:00:00:42" in neighbor, neighbor
             traffic("MODIFIED" if mode == "modify" and not protected else "ORIGINAL",
@@ -66,6 +78,9 @@ def scenario(name, mode, protected=False, delay=0):
             if process.poll() is None:
                 # The bounded attack exits and restores mappings after nine seconds.
                 process.wait(timeout=15)
+    if protected:
+        after_dropped = dropped_arp_total()
+        assert after_dropped > before_dropped, (before_dropped, after_dropped)
     stats = json.loads((folder / "stats.json").read_text())
     if protected:
         assert stats["received"] == 0 and stats["modified"] == 0, stats

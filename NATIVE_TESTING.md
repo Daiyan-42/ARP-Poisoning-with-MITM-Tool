@@ -23,6 +23,13 @@ export ARPLAB_ARTIFACTS_DIR=./artifacts
 **Confirms:** nothing yet — this just wires reality into the code. Every phase
 below silently fails its identity checks if any of these are wrong.
 
+On the Linux (Omarchy) device only, also install nftables -- `defense.py` uses
+it there for the same inventory-based ARP filtering as the Docker lab (see
+Phase 9):
+```bash
+sudo pacman -S nftables
+```
+
 ## Phase 1 — unit tests (A or B, no sudo)
 
 ```bash
@@ -86,6 +93,10 @@ values match the real victim/gateway MACs from Phase 0, then a `ready` event.
 **Confirms:** the attacker resolved both real peers correctly and started the
 poisoning loop.
 
+(`--mode modify` also accepts `--text "..."` or `--prompt` for custom
+replacement text instead of the default `ORIGINAL`→`MODIFIED` -- see the
+"Known limitations" note below on what it needs to actually match traffic.)
+
 ## Phase 6 — poisoning confirmed (A, during the 60s window)
 
 ```bash
@@ -120,26 +131,59 @@ leaving the network in its original state.
 
 ## Phase 9 — defense confirmed (A, then B)
 
+`defense.py` now branches by platform (see README "Running natively"): **macOS
+falls back to static MAC pinning** (no `nftables` on Darwin); **Linux uses the
+same nftables inventory-based filtering as the Docker lab**. The command
+differs accordingly.
+
+### If A (victim) is macOS
+
 ```bash
-# on A
 sudo -E python3 -m arplab.defense victim enable
 ```
-Repeat Phase 5 on B, then re-check Phase 6 on A.
-**Expected:** the ARP entry stays on the router's genuine MAC throughout
-(`PERMANENT` on Linux) even while B is actively trying to poison it; A's
-`python3 -m arplab.client alerts` still reports the attempted forgery.
-**Confirms:** the pinned static entry actually blocks the redirection, and
-the watcher still detects the attempt even though it failed.
+Live-verified: `enable` sets a permanent pinned entry (`arp -n <gw-ip>` shows
+`permanent`), a second `enable` is safely idempotent, and `disable` correctly
+reverts to a plain dynamic entry rather than erroring or leaving a stale one.
+
+### If A (victim) is Linux
+
+The Docker lab's `arplab.inventory` module discovers bindings via `docker
+inspect`, which doesn't apply here -- supply the same three addresses from
+Phase 0 directly instead:
+```bash
+python3 -c "import json, os
+print(json.dumps({os.environ['ARPLAB_VICTIM_IP']: os.environ['ARPLAB_VICTIM_MAC'],
+                  os.environ['ARPLAB_GATEWAY_IP']: os.environ['ARPLAB_GATEWAY_MAC'],
+                  os.environ['ARPLAB_ATTACKER_IP']: os.environ['ARPLAB_ATTACKER_MAC']}))" \
+  | sudo -E python3 -m arplab.defense victim enable --bindings-stdin
+```
+**Expected (either OS):** `{"enabled": true, ...}`. Repeat Phase 5 on B, then
+re-check Phase 6 on A.
+**Expected during the repeated attack:** the ARP entry never shows B's MAC —
+on macOS it stays pinned/`permanent`; on Linux it stays dynamic but B's forged
+replies get silently dropped by the nftables filter before ever reaching the
+neighbor table (check the counter: `python3 -m arplab.defense victim status`
+→ `dropped_arp` increasing). A's `python3 -m arplab.client alerts` still
+reports the attempted forgery either way, since the passive watcher runs
+independently of which mechanism is blocking it.
+**Confirms:** the defense actually blocks the redirection, and detection keeps
+working even though the attack failed.
 
 ```bash
 # cleanup, on A
 sudo -E python3 -m arplab.defense victim disable
 ```
 
-## Known limitation
+## Known limitations
 
-`--mode modify` looks for a literal `ORIGINAL` string from an HTTP server you
-control — your real router won't serve that, so it isn't part of this native
-checklist. `relay`/`drop`/`delay-ms` fully demonstrate the MITM position
-against real traffic as-is; see the README's "Native" section for what `modify`
-would need on a real network.
+`--mode modify` (with or without `--text`/`--prompt`) looks for the fixed,
+1024-byte-padded `HTTP_ORIGINAL_BODY` from `arplab/config.py`, which only the
+demo gateway server serves -- your real router won't return that, so it isn't
+part of this native checklist. `relay`/`drop`/`delay-ms` fully demonstrate the
+MITM position against real traffic as-is; see the README's "Native" section
+for what `modify` would need on a real network.
+
+`arplab.inventory` and `main.py` (the interactive menu) are Docker-only --
+both shell out to `docker compose`/`docker inspect`, which have no native
+two-machine equivalent. Use the `arplab.*` module commands directly instead,
+as this checklist does throughout.

@@ -1,4 +1,3 @@
-"""Byte-level packet construction/parsing. No packet-crafting dependencies."""
 import socket
 import struct
 
@@ -24,7 +23,6 @@ def ethernet(dst, src, kind, payload):
 def build_arp(src_mac, src_ip, dst_mac, dst_ip, opcode=2, broadcast=False):
     if opcode not in (1, 2):
         raise ValueError("Unsupported ARP operation")
-    # ! packs all multi-byte fields in network order; no extra htons here.
     payload = struct.pack("!HHBBH6s4s6s4s", 1, ETH_IP, 6, 4, opcode,
                           mac_bytes(src_mac), socket.inet_aton(src_ip),
                           mac_bytes(dst_mac), socket.inet_aton(dst_ip))
@@ -93,12 +91,6 @@ def rewrite_ethernet(frame, dst, src):
 
 
 def complete_transport_checksum(frame):
-    """Finish TCP/UDP checksums before raw retransmission in the Docker lab.
-
-    recvfrom returns bytes without the kernel's checksum-offload metadata.
-    Even unchanged packets can therefore need a checksum before sock.send.
-    Fragmented datagrams need reassembly and are left unchanged.
-    """
     info = parse_ipv4(frame)
     if not info or info["fragmented"] or "src_port" not in info:
         return frame
@@ -116,7 +108,7 @@ def complete_transport_checksum(frame):
     pseudo = data[26:34] + struct.pack("!BBH", 0, info["protocol"], length)
     value = checksum(bytes(pseudo + data[start:start + length]))
     if info["protocol"] == 17 and value == 0:
-        value = 0xffff  # UDP zero means checksum disabled.
+        value = 0xffff
     data[offset:offset + 2] = struct.pack("!H", value)
     return bytes(data)
 
@@ -148,7 +140,7 @@ def dns_name(payload):
         if length == 0:
             return ".".join(labels)
         if length > 63 or pos + length > len(payload):
-            return None  # This demo uses uncompressed question names.
+            return None
         labels.append(payload[pos:pos + length].decode("ascii", "replace"))
         pos += length
     return None

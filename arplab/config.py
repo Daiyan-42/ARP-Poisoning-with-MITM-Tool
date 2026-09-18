@@ -13,3 +13,13 @@ TRUSTED = {
     ATTACKER: os.environ.get("ARPLAB_ATTACKER_MAC", "02:42:0a:00:00:42"),
 }
 ROLES = {"victim": VICTIM, "gateway": GATEWAY, "attacker": ATTACKER}
+
+HTTP_BODY_SIZE = 1024
+HTTP_ORIGINAL_BODY = b"ORIGINAL: Hello from the lab gateway!".ljust(HTTP_BODY_SIZE - 1) + b"\n"
+
+
+def replacement_body(text):
+    encoded = text.encode("utf-8")
+    if len(encoded) > HTTP_BODY_SIZE - 1:
+        raise ValueError(f"Text must fit in {HTTP_BODY_SIZE - 1} UTF-8 bytes")
+    return encoded.ljust(HTTP_BODY_SIZE - 1) + b"\n"

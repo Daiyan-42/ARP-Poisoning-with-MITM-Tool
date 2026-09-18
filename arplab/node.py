@@ -1,4 +1,3 @@
-"""Container services for the isolated ARP lab."""
 import argparse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -7,17 +6,17 @@ import socketserver
 import struct
 import threading
 
-from .config import GATEWAY, IFACE, ROLES, TRUSTED
-from .defense import Watcher, set_static
+from .config import GATEWAY, HTTP_ORIGINAL_BODY, IFACE, ROLES, TRUSTED
+from .defense import Watcher
 from .io import interface_info
 from .packets import dns_name
 
 
 class HTTPHandler(BaseHTTPRequestHandler):
     def do_GET(self):
-        body = b"ORIGINAL: Hello from the lab gateway!\n"
+        body = HTTP_ORIGINAL_BODY
         self.send_response(200)
-        self.send_header("Content-Type", "text/plain")
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -27,7 +26,6 @@ class HTTPHandler(BaseHTTPRequestHandler):
 
 
 def dns_response(query):
-    """Answer a single uncompressed IN/A question for demo.lab."""
     if len(query) < 12:
         return None
     _, flags, questions, _, _, _ = struct.unpack("!6H", query[:12])
@@ -99,13 +97,10 @@ def main():
     watcher = Watcher(args.role)
     servers, threads = [], []
     try:
-        if args.role in ("victim", "gateway"):
-            set_static(args.role, False)
         watcher.start()
         if args.role == "gateway":
             servers.append(ThreadingHTTPServer((GATEWAY, 8080), HTTPHandler))
             servers.append(socketserver.UDPServer((GATEWAY, 53), DNSHandler))
-        # Health and monitoring are only accessible inside each container.
         servers.append(ThreadingHTTPServer(("127.0.0.1", 8000),
                                            control_handler(args.role, watcher)))
         for server in servers:

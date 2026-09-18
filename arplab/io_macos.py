@@ -102,9 +102,17 @@ def raw_socket(iface):
 
 
 def set_neighbor(iface, ip, mac, permanent):
-    # BSD arp -s entries are permanent by default; "temp" gives an ordinary,
+    # BSD's arp -s refuses to overwrite an existing entry ("File exists"),
+    # unlike Linux's "ip neigh replace"; delete first (no-op if absent).
+    # "ifscope" pins both operations to this interface -- without it, a
+    # genuine interface-scoped entry (how macOS normally learns a router's
+    # MAC) and our unscoped one can coexist and collide ("can only proxy
+    # for <ip>") instead of the second cleanly replacing the first.
+    subprocess.run(["arp", "-d", ip, "ifscope", iface], capture_output=True)
+    # arp -s entries are permanent by default; "temp" gives an ordinary,
     # ageable entry -- the closest match to Linux's dynamic "nud reachable".
-    subprocess.run(["arp", "-s", ip, mac] + ([] if permanent else ["temp"]), check=True)
+    args = ["arp", "-s", ip, mac] + ([] if permanent else ["temp"]) + ["ifscope", iface]
+    subprocess.run(args, check=True)
 
 
 def ip_forwarding_enabled():

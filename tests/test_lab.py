@@ -30,7 +30,9 @@ class LabTests(unittest.TestCase):
             self.assertEqual(client_main(), 1)
 
     def test_poison_and_restore(self):
-        detector = Detector()
+        # Detector() no longer trusts arplab.config.TRUSTED by default (it's
+        # fed a live-verified inventory at runtime instead) -- pass it explicitly.
+        detector = Detector(TRUSTED)
         for target, claimed in ((VICTIM, GATEWAY), (GATEWAY, VICTIM)):
             forged = parse_arp(build_arp_reply(TRUSTED[ATTACKER], claimed,
                                                TRUSTED[target], target))

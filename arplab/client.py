@@ -1,4 +1,3 @@
-"""Health checks and repeatable HTTP/DNS traffic for the ARP lab."""
 import argparse
 import json
 import secrets
@@ -12,7 +11,6 @@ from .config import GATEWAY
 
 
 def get(url, timeout=3):
-    # Container traffic must go directly to the lab, regardless of host proxies.
     with build_opener(ProxyHandler({})).open(url, timeout=timeout) as response:
         return response.read().decode()
 
@@ -52,7 +50,7 @@ def main():
                     if action == "health" and not result.get("healthy"):
                         raise RuntimeError("ARP watcher is not running")
                 elif action == "http":
-                    result = get(f"http://{GATEWAY}:8080/")
+                    result = get(f"http://{GATEWAY}:8080/").rstrip(" \n")
                 else:
                     result = dns_lookup()
                 print(json.dumps({"action": action, "result": result}), flush=True)
