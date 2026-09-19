@@ -32,12 +32,20 @@ def validate_bindings(bindings):
 
 
 def read_bindings():
-    # Falls back to the configured TRUSTED table (env-var-driven, see config.py)
-    # until a stronger inventory (e.g. Linux's docker-inspect-verified enrollment
-    # below) has been enrolled, so detection works out of the box everywhere.
     if not BINDINGS_PATH.exists():
-        return dict(TRUSTED)
+        return {}
     return validate_bindings(json.loads(BINDINGS_PATH.read_text()))
+
+
+def _watcher_bindings():
+    # Linux: unchanged -- no inventory enrolled yet means no trusted baseline
+    # (see README: "The detector starts without a hardcoded trusted table").
+    # macOS has no bindings-file mechanism at all (no nftables enrollment), so
+    # it falls back to the configured TRUSTED table instead of never detecting
+    # mapping mismatches.
+    if platform.system() == "Linux":
+        return read_bindings()
+    return dict(TRUSTED)
 
 
 def ruleset(bindings, iface=IFACE):
@@ -148,7 +156,7 @@ class Detector:
 class Watcher:
     def __init__(self, role, iface=IFACE):
         self.iface = iface
-        self.detector = Detector(read_bindings())
+        self.detector = Detector(_watcher_bindings())
         self.log = EventLog(f"{ARTIFACTS_DIR}/{role}-watch.jsonl", console=False)
         self.alerts = deque(maxlen=200)
         self.count = 0
@@ -172,7 +180,7 @@ class Watcher:
                 continue
             arp = parse_arp(frame)
             if arp:
-                bindings = read_bindings()
+                bindings = _watcher_bindings()
                 if bindings != self.detector.trusted:
                     self.detector = Detector(bindings)
                 reasons = self.detector.observe(arp)
